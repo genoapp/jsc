@@ -16,7 +16,6 @@
 
 package ge.gnio;
 
-import com.sun.istack.internal.NotNull;
 import ge.gnio.annotation.KeyPacketListener;
 import ge.gnio.listener.PacketListener;
 
@@ -368,7 +367,7 @@ public class Server<T extends AbstractClient<T>> {
     }
 
 
-    public void addPacketListener(@NotNull  PacketListener<T> listener){
+    public void addPacketListener(PacketListener<T> listener){
 
         Objects.requireNonNull(listener);
 

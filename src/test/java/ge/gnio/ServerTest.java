@@ -31,7 +31,6 @@ public class ServerTest {
     @Test
     public void addPacketListener() {
         server.addPacketListener(new MyPacketListener());
-        server.addPacketListener(new MyPacketListener());
     }
 
 
