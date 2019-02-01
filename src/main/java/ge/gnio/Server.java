@@ -1,5 +1,5 @@
 /*
- * Copyright 2018  Geno Papashvili
+ * Copyright 2018 Geno Papashvili
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,12 @@
 
 package ge.gnio;
 
+import com.sun.istack.internal.NotNull;
+import ge.gnio.annotation.KeyPacketListener;
 import ge.gnio.listener.PacketListener;
 
 import java.io.IOException;
+import java.lang.reflect.Array;
 import java.lang.reflect.InvocationTargetException;
 import java.net.InetSocketAddress;
 import java.nio.BufferOverflowException;
@@ -29,6 +32,8 @@ import java.util.*;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.logging.Logger;
+import java.util.stream.Stream;
+
 
 
 public class Server<T extends AbstractClient<T>> {
@@ -74,7 +79,7 @@ public class Server<T extends AbstractClient<T>> {
 
         this.clazz = clazz;
 
-        this.maxBufferSize = maxBufferSize + 8;
+        this.maxBufferSize = maxBufferSize + Integer.BYTES * 2;
 
         this.sleepTime = sleepTime;
 
@@ -93,7 +98,7 @@ public class Server<T extends AbstractClient<T>> {
 
         latch = new CountDownLatch(1);
 
-        selectorThread = new Thread(new Looper());
+        selectorThread = new Thread(this::run);
         selectorThread.setName(getClass().getSimpleName() + "-" + selectorThread.getId());
         selectorThread.start();
 
@@ -146,103 +151,96 @@ public class Server<T extends AbstractClient<T>> {
         serverSocketChannel.register(selector, SelectionKey.OP_ACCEPT);
     }
 
+    private void run() {
 
-    private class Looper implements Runnable{
+        latch.countDown();
 
+        T client;
+        Iterator<SelectionKey> selectedKeys;
 
-        @Override
-        public void run() {
-            latch.countDown();
+        int count;
 
-            T client;
-            Iterator<SelectionKey> selectedKeys;
+        eof = true;
+        while (eof) {
+            try {
+                count = selector.selectNow();
+            } catch (IOException e) {
+                count = 0;
+            }
 
-            int count;
+            if (count > 0) {
+                selectedKeys = selector.selectedKeys().iterator();
+                while (selectedKeys.hasNext()) {
+                    SelectionKey key = selectedKeys.next();
+                    if (key.isValid()) {
+                        client = clazz.cast(key.attachment());
 
-            eof = true;
-            while (eof) {
-                try {
-                    count = selector.selectNow();
-                } catch (IOException e) {
-                    count = 0;
-                }
-
-                if (count > 0) {
-                    selectedKeys = selector.selectedKeys().iterator();
-                    while (selectedKeys.hasNext()) {
-                        SelectionKey key = selectedKeys.next();
-                        if (key.isValid()) {
-                            client = clazz.cast(key.attachment());
-
-                            switch (key.readyOps()) {
-                                case SelectionKey.OP_ACCEPT:
-                                    accept(key);
-                                    break;
-                                case SelectionKey.OP_CONNECT:
-                                    connect(key);
-                                    break;
-                                case SelectionKey.OP_READ:
-                                    reader(client);
-                                    break;
-                                case SelectionKey.OP_WRITE:
-                                    writer(client);
-                                    break;
-                            }
-                        }
-                        selectedKeys.remove();
-
-                    }
-                }
-
-                if (executorService != null) {
-                    synchronized (runLaterList) {
-                        Iterator<RunLaterHelper> iterator = runLaterList.iterator();
-                        while (iterator.hasNext()) {
-                            RunLaterHelper rlh = iterator.next();
-                            if (rlh.time < Calendar.getInstance().getTimeInMillis()) {
-                                iterator.remove();
-                                executorService.execute(rlh.runnable);
-                            }
+                        switch (key.readyOps()) {
+                            case SelectionKey.OP_ACCEPT:
+                                accept(key);
+                                break;
+                            case SelectionKey.OP_CONNECT:
+                                connect(key);
+                                break;
+                            case SelectionKey.OP_READ:
+                                reader(client);
+                                break;
+                            case SelectionKey.OP_WRITE:
+                                writer(client);
+                                break;
                         }
                     }
-                }
-
-                try {
-                    Thread.sleep(sleepTime);
-                } catch (InterruptedException ignore) {
+                    selectedKeys.remove();
 
                 }
             }
 
-            for(SelectionKey  k : selector.keys()){
-                if (k.channel() != null) {
-                    try {
-                        k.channel().close();
-                    } catch (IOException e) {
-                        e.printStackTrace();
+            if (executorService != null) {
+                synchronized (runLaterList) {
+                    Iterator<RunLaterHelper> iterator = runLaterList.iterator();
+                    while (iterator.hasNext()) {
+                        RunLaterHelper rlh = iterator.next();
+                        if (rlh.time < Calendar.getInstance().getTimeInMillis()) {
+                            iterator.remove();
+                            executorService.execute(rlh.runnable);
+                        }
                     }
                 }
-                k.cancel();
             }
 
             try {
-                selector.close();
-            } catch (IOException e) {
-                e.printStackTrace();
+                Thread.sleep(sleepTime);
+            } catch (InterruptedException ignore) {
+
             }
         }
+
+        for(SelectionKey  k : selector.keys()){
+            if (k.channel() != null) {
+                try {
+                    k.channel().close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+            k.cancel();
+        }
+
+        try {
+            selector.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
-
-
 
 
     private void writer(T client) {
         if (!client.getSendPacketQueue().isEmpty()) {
             Packet packet = client.getSendPacketQueue().poll();
 
-            ByteBuffer buffer = ByteBuffer.allocate(Objects.requireNonNull(packet).getBuffer().remaining() + 8).order(ByteOrder.LITTLE_ENDIAN);
+            ByteBuffer buffer = ByteBuffer.allocate(Objects.requireNonNull(packet).getBuffer().remaining() + Integer.BYTES * 2).order(ByteOrder.LITTLE_ENDIAN);
 
-            buffer.putInt(packet.getBuffer().remaining() + 4);
+            buffer.putInt(packet.getBuffer().remaining() + Integer.BYTES);
             buffer.putInt(packet.getKey());
             buffer.put(packet.getBuffer());
             buffer.flip();
@@ -271,12 +269,12 @@ public class Server<T extends AbstractClient<T>> {
     }
 
 
-    private void reader(final T client) {
+    private void reader(T client) {
 
         ByteBuffer buffer = client.getReadBuffer();
 
         if (buffer == null) {
-            buffer = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN);
+            buffer = ByteBuffer.allocate(Integer.BYTES).order(ByteOrder.LITTLE_ENDIAN);
         }
 
         int result = -1;
@@ -287,33 +285,30 @@ public class Server<T extends AbstractClient<T>> {
         }
 
         if (result != -1) {
-            if (buffer.position() == 4 && buffer.capacity() == 4) {
+            if (buffer.position() == Integer.BYTES && buffer.capacity() == Integer.BYTES) {
                 buffer.flip();
                 int size = buffer.getInt();
                 if (size > maxBufferSize || size <= 0) {
                     size = maxBufferSize;
                 }
                 buffer = ByteBuffer.allocate(size).order(ByteOrder.LITTLE_ENDIAN);
-            } else if (buffer.position() == buffer.capacity() && buffer.capacity() > 4) {
+            } else if (buffer.position() == buffer.capacity() && buffer.capacity() > Integer.BYTES) {
 
-                final ByteBuffer finalBuffer = buffer;
+                ByteBuffer finalBuffer = buffer;
                 finalBuffer.flip();
 
-                Runnable runnable = new Runnable() {
-                    @Override
-                    public void run() {
-                        int key = finalBuffer.getInt();
-                        byte[] bytes = new byte[finalBuffer.remaining()];
-                        finalBuffer.get(bytes);
+                Runnable runnable = () -> {
+                    int key = finalBuffer.getInt();
+                    byte[] bytes = new byte[finalBuffer.remaining()];
+                    finalBuffer.get(bytes);
 
-                        Packet packet = new Packet(key, ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN));
+                    Packet packet = new Packet(key, ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN));
 
-                        try {
-                            packetsListeners.get(key).readPacket(client, packet);
-                        } catch (NullPointerException e) {
-                            if (client.getSecondaryPacketListener() != null && client.getSecondaryPacketListener().KEY == key) {
-                                client.getSecondaryPacketListener().readPacket(client, packet);
-                            }
+                    try {
+                        packetsListeners.get(key).readPacket(client, packet);
+                    } catch (NullPointerException e) {
+                        if (client.getSecondaryPacketListener() != null && client.getSecondaryPacketListener().KEY == key) {
+                            client.getSecondaryPacketListener().readPacket(client, packet);
                         }
                     }
                 };
@@ -373,6 +368,21 @@ public class Server<T extends AbstractClient<T>> {
     }
 
 
+    public void addPacketListener(@NotNull  PacketListener<T> listener){
+
+        Objects.requireNonNull(listener);
+
+        int key = Objects.requireNonNull(listener.getClass().getAnnotation(KeyPacketListener.class),"Undefined PacketListener  key").value();
+
+        if (packetsListeners.containsKey(key)) {
+            throw new IllegalArgumentException(String.format("key %d already exists...", key));
+        }
+
+        packetsListeners.put(key,listener);
+
+    }
+
+
     public void addPacketListener(int key, PacketListener<T> listener) {
         if (packetsListeners.containsKey(key)) {
             throw new IllegalArgumentException(String.format("key %d already exists...", key));
@@ -390,19 +400,15 @@ public class Server<T extends AbstractClient<T>> {
     }
 
 
-
-
-    public List<T> getClients() {
-        List<T> clients = new ArrayList<>();
+    @SuppressWarnings("unchecked")
+    public Stream<T> getClients() {
         synchronized (selector) {
-            for(SelectionKey k : selector.keys()){
-                Object o = k.attachment();
-                if(o instanceof AbstractClient){
-                    clients.add(clazz.cast(o));
-                }
-            }
+            Stream<T> client = selector.keys().stream()
+                    .filter(k -> k.attachment() != null && k.attachment() instanceof AbstractClient)
+                    .map(k -> clazz.cast(k.attachment()));
+
+            return Stream.of(client.toArray(size -> (T[]) Array.newInstance(clazz, size)));
         }
-        return clients;
     }
 
 
