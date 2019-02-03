@@ -1,5 +1,5 @@
 /*
- * Copyright 2018 Geno Papashvili
+ * Copyright 2018  Geno Papashvili
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,10 +14,14 @@
  * limitations under the License.
  */
 
-package ge.gnio;
+package ge.gnio.annotation;
 
-import java.net.InetAddress;
+import java.lang.annotation.*;
 
-public interface IFilter {
-    boolean doAccept(InetAddress address);
+
+@Documented
+@Target(ElementType.TYPE)
+@Retention(RetentionPolicy.RUNTIME)
+public @interface KeyPacketListener {
+    int value();
 }
